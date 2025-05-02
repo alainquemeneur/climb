@@ -1,0 +1,2 @@
+gcc example.c climb.c -o example -lmysqlclient
+cp example /usr/lib/cgi-bin

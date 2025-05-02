@@ -1,0 +1,170 @@
+Climb stands for "C LIbrary for Modern Backends". As it sounds, it is aimed at building C backends able to talk http/https with frontends like Flutter or ReactJS, to talk with a self hosted MySQL DB, and to respond to http/https client in complient JSON format.
+
+Architecture
+------------
+The architecture we want to build with Climb is an Internet server with 3 components in it : a NginX https server, C programs linked to Climb on each URL active on the server, and a MySQL DB. HTTP/HTTPS clients can contact the URLs in GET or POST methods, send headers and bodies, and receive a JSON response. Meanwhile, the C program behind the called URL will check the request and build accurate JSON response, dealing with security, rights and MySQL table content.
+
+Installation
+------------
+This document does not cover MySQL installation process. Please refer to appropriate documentation if needed.
+
+First of all, we need a fonctionnal NginX server running. The installation process below is given for Ubuntu. Please adapt to your distribution if needed.
+
+sudo apt-get update
+sudo apt-get install nginx fcgiwrap libmysqlclient-dev gcc openssl
+sudo cp /usr/share/doc/fcgiwrap/examples/nginx.conf /etc/nginx/fcgiwrap.conf
+sudo mkdir /usr/lib/cgi-bin
+
+Now, in file /etc/nginx/sites-available/default you need to add :
+include fcgiwrap.conf;
+just after } in location
+
+Here is an example of the final result in my own default file :
+server_name _;
+
+        location / {
+                # First attempt to serve request as file, then
+                # as directory, then fall back to displaying a 404.
+                #fastcgi_pass 127.0.0.1:9000;
+                #fastcgi_pass unix:/run/fcgiwrap.socket;
+                client_max_body_size 100M;
+                try_files $uri $uri/ =404;
+        }
+include fcgiwrap.conf;
+        # pass PHP scripts to FastCGI server
+        #
+        location ~ \.php$ {
+
+Ok, now we restart NginX to take this change into account :
+
+sudo service nginx restart
+
+Now, we want to check if NginX is correctly set. Let's create file /usr/lib/cgi-bin/test and let's put the below code in it :
+
+#!/bin/bash
+echo "Content-type: text/html"
+echo
+echo "<html><body>NginX is Ok</body></html>"
+
+Let's set make this file executable:
+
+sudo chown www-data.www-data /usr/lib/cgi-bin/test
+sudo chmod 755 /usr/lib/cgi-bin/test
+
+And now the final check : open file http://localhost/cgi-bin/test in your local browser. If the page displays "NginX is Ok", we're done.
+
+Now we may want to activate https on our NginX server, assuming you have a valid domain name :
+
+sudo apt install snapd
+sudo snap install core; sudo snap refresh core
+sudo snap install --classic certbot
+sudo ln -s /snap/bin/certbot /usr/bin/certbot
+sudo certbot --nginx
+
+We can fake test the renewal of the certificate by Let's encrypt by :
+
+sudo certbot renew --dry-run
+
+Ok, now the main URL of your server must be fonctionnal in HTTPS
+
+If you have chosen to activate https on your web server, you have to go back to /etc/nginx/sites-available/default, and add :
+include fcgiwrap.conf;
+in the server part added by certbot, like before, after } in "location"
+
+And of course, restart NginX again.
+
+Now your server is ready to be a modern C backend.
+
+All of the above is to be made only ONCE.
+
+Using the Climb library
+-----------------------
+Now we enter the heart of our topic. The use of the Climb library can be tested using the example program provided in the example folder.
+
+All you have to do is to include climb.h in your C file, and compile your project with climb.c, and link to libmysqlclient. The typical compile command line will be :
+
+gcc your_file.c climb.c -o your_file -lmysqlclient
+
+Let's test the provided example :
+
+First copy frontend_get.html and frontend_post.html to /var/www/html/ using sudo, then in your browser open http://localhost/frontend_get.html or http://localhost/frontend_post.html
+
+You can see the simple html frontend we'll be using to send first and second name to our example C backend. For now, if you click on "Send to backend", an error will occur since the C backend is not compiled.
+
+To compile and install the backend, run:
+
+sudo ./compile
+
+This creates /usr/lib/cgi-bin/example, which is the C backend behind the URL called by the html form.
+
+This backend program reads the request method, body and URI, and send back a JSON response showing what was received by the backend. This program also shows how to access a MySQL database and how to send a request to it (of course the program will fail on that point since we haven't set a DB up, but you can analyze the sample code and test MySQL on your own). This program also shows how to setup an optional semaphore (mutex), useful if your backend programs have to share critical sections of code.
+
+The source code of the example program is fully commented, and should be self explaining and reuseable.
+
+As you can see in climb.h, Climb provide the necessary functions to read the http/https requests, to send SQL request to MySQL and read responses, to format JSON responses, but also to hash a password and some time functions
+
+You can send feedback to alain.quemeneur@gmail.com
+
+Bonus : Accessing the backend from a Flutter client
+---------------------------------------------------
+To talk with this backend from a Flutter client instead of a html form, it's so simple :
+
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert' as convert;
+
+var responseStatus = [];
+var responseData = [];
+bool error=false;
+String errorstatus="";
+
+Future getServerData() async {
+try     {      
+        var response = await http.post(Uri.parse("http://localhost/cgi-bin/example"),body: {"txt-first": "my_first_name", "txt-second": "my_second_name"});
+        if(response.statusCode == 200)
+                {
+                var jsonStatus = convert.jsonDecode(response.body)['status'];
+                var jsonData = convert.jsonDecode(response.body)['data'];
+                setState(() {
+                        responseStatus = jsonStatus;
+                        if(responseStatus[0]['error']==false) 
+                                {
+                                error=true;
+                                } 
+                        else 
+                                {
+                                error=false;
+                                }
+                        errorstatus=responseStatus[0]['errorstatus'];
+                        if(!error) 
+                                {
+                                responseData = jsonData;  
+                                }
+                        });
+                if(error) 
+                        {
+                        ScaffoldMessenger.of(Context).showSnackBar(
+                                SnackBar(
+                                        content: Text(errorstatus),
+                                        action: SnackBarAction(
+                                                textColor: Color(0xFFFFFFFF),
+                                                label: 'Ok',
+                                                onPressed: () {},
+                                                ),
+                                        ),
+                                );
+                        }
+                }
+        } on Exception {
+        ScaffoldMessenger.of(Context).showSnackBar(
+                SnackBar(
+                        content: const Text('Server unavailable'),
+                        action: SnackBarAction(
+                                textColor: Color(0xFFFFFFFF),
+                                label: 'Ok',
+                                onPressed: () {},
+                                ),
+                        ),
+                );
+        }
+  }
